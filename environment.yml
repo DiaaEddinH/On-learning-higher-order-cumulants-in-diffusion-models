@@ -137,9 +137,10 @@ dependencies:
   - zipp=3.20.0
   - zstd=1.5.6
   - pip:
-      - data=
-      - funcsigs=
-      - future=
-      - latex=
-      - shutilwhich=
-      - tempdir=
+      - data==0.4
+      - funcsigs==1.0.2
+      - future==1.0.0
+      - latex==0.7.0
+      - shutilwhich==1.1.0
+      - tempdir==0.7.1
+prefix: /opt/homebrew/Caskroom/miniforge/base/envs/score_env
