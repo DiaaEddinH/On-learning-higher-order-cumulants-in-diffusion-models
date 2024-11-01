@@ -5,29 +5,6 @@ from tqdm import tqdm, trange
 from utils import *
 
 
-def new_sampler(model, size: int, num_steps: int, history: bool = False, eps=1e-5):
-    output = []
-    std = model.marginal_prob.stddev(0.5 * torch.ones(1)).item()
-    x = np.random.normal(loc=0, scale=std, size=(size, 1))
-    step_size = 1 / num_steps
-    step_size_sqrt = step_size**0.5
-    for t_i in tqdm(torch.linspace(0.5, eps, num_steps)[:, None]):
-        g_t = model.marginal_prob.diffusion_coeff(t_i).item()
-
-        torch_x = torch.tensor(x, dtype=torch.float32)
-        score = grab(model.forward(torch_x, t_i))
-
-        noise = np.random.randn(*x.shape) if t_i > eps else 0
-
-        x = (x + step_size * g_t**2 * score) + step_size_sqrt * g_t * noise
-        if history:
-            output.append(x)
-
-    if history:
-        return np.stack(output)
-    return x
-
-
 class GaussianFourierProjection(torch.nn.Module):
     def __init__(
         self, embed_dim: int, scale: float = 30.0, device: Optional[str] = None
@@ -102,15 +79,33 @@ class Net(torch.nn.Module):
 
 class MarginalProb:
     def __init__(self, sigma: float = 2.0) -> None:
-        self.sigma = sigma
+        self.logsigma = log(sigma)
 
-    def stddev(self, t: torch.Tensor) -> torch.Tensor:
-        return torch.sqrt((self.sigma ** (2 * t) - 1.0) / 2 / np.log(self.sigma))[
-            ..., None
-        ]
+    def get_mean_stddev(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return (
+            x,
+            torch.sqrt(torch.exp((2 * t * self.logsigma) - 1.0) / 2 / self.logsigma)[
+                ..., None
+            ],
+        )
 
     def diffusion_coeff(self, t: torch.Tensor) -> torch.Tensor:
-        return self.sigma ** t[..., None]
+        return torch.exp(t * self.logsigma)[..., None]
+
+    def drift(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return torch.zeros_like(x)
+
+
+class VPMarginalProb(MarginalProb):
+    def __init__(self, sigma: float = 2) -> None:
+        super().__init__(sigma)
+
+    def get_mean_stddev(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        s = ((torch.exp(2 * t * self.logsigma) - 1.0) / 2 / self.logsigma)[..., None]
+        return x * torch.exp(-s / 2), torch.sqrt(1 - torch.exp(-s))
+
+    def drift(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return -0.5 * self.diffusion_coeff(t) ** 2 * x
 
 
 class ScoreModel(torch.nn.Module):
@@ -132,8 +127,8 @@ class ScoreModel(torch.nn.Module):
     def train_step(self, x, optimizer, eps, scheduler=None):
         random_t = torch.rand(1, device=self.device) * (1.0 - eps) + eps
         z = torch.randn_like(x)
-        std = self.marginal_prob.stddev(random_t)
-        perturbed_x = x + z * std
+        mean, std = self.marginal_prob.get_mean_stddev(x, random_t)
+        perturbed_x = mean + z * std
 
         optimizer.zero_grad()
 
@@ -152,43 +147,12 @@ class ScoreModel(torch.nn.Module):
         self,
         loader,
         optimizer,
-        epochs: int = 20,
-        filename: Optional[str] = None,
-        plot_loss: bool = None,
-        eps=1e-5,
-    ):
-        tqdm_epoch = trange(epochs)
-
-        for epoch in tqdm_epoch:
-            epoch_loss = 0
-            num_items = 0
-            for batch in loader:
-                loss = self.train_step(batch, optimizer, eps)
-                epoch_loss += loss.item() * batch.shape[0]
-                num_items += batch.shape[0]
-
-            self.history.append(epoch_loss / num_items)
-            tqdm_epoch.set_description(f"Average Loss: {self.history[-1]:5f}")
-            if filename is not None:
-                torch.save(self.state_dict(), filename)
-
-        if plot_loss:
-            fig, ax = plt.subplots(1, 1, dpi=75, figsize=(6, 3))
-            ax.plot(self.history)
-            ax.set_ylabel("MSELoss")
-            ax.set_xlabel("Epoch")
-            plt.show()
-
-    def train_v2(
-        self,
-        loader,
-        optimizer,
         epochs: int,
         filename: str,
         eps: float = 1e-5,
         scheduler=None,
         early_stopping: int = 10,
-    ):
+    ) -> None:
         tqdm_epoch = trange(epochs)
         best_loss = float("inf")
         counter = 0
@@ -198,7 +162,7 @@ class ScoreModel(torch.nn.Module):
             num_items = 0
             for batch in loader:
                 batch = torch.concatenate([batch, -batch])
-                loss = self.train_step(batch, optimizer, eps, scheduler)
+                loss = self.train_step(batch.to(self.device), optimizer, eps, scheduler)
                 epoch_loss += loss.item() * batch.shape[0]
                 num_items += batch.shape[0]
             current_loss = epoch_loss / num_items
@@ -221,7 +185,9 @@ class ScoreModel(torch.nn.Module):
 
     def sampler(self, size: int, num_steps: int, history: bool = False, eps=1e-5):
         output = []
-        std = self.marginal_prob.stddev(torch.ones(1)).item()
+        _, std = self.marginal_prob.get_mean_stddev(
+            None, torch.ones(1)
+        ).item()  # we only need the std. dev.
         x = np.random.normal(loc=0, scale=std, size=(size, 1))
         step_size = 1 / num_steps
         step_size_sqrt = step_size**0.5
@@ -243,48 +209,48 @@ class ScoreModel(torch.nn.Module):
                 return np.stack(output)
         return x
 
+    def tensor_sampler(
+        self, size: int, num_steps: int, history: bool = False, eps=1e-5
+    ):
+        output = []
+        step_size = 1 / num_steps
+        step_size_sqrt = step_size**0.5
 
-class VPMarginalProb:
-    def __init__(self, sigma: float = 2.0) -> None:
-        self.sigma = sigma
+        t = torch.ones(1, device=self.device)
+        _, std = self.marginal_prob.get_mean_stddev(None, t)
+        x = torch.randn(size, 1, device=self.device) * std
+        with torch.no_grad():
+            for t_i in tqdm(
+                torch.linspace(1, eps, num_steps, device=self.device)[:, None]
+            ):
+                g_t = self.marginal_prob.diffusion_coeff(t_i)
+                noise = torch.randn_like(x) if t_i > eps else 0
 
-    def stddev(self, t: torch.Tensor) -> torch.Tensor:
-        s = ((self.sigma ** (2 * t) - 1.0) / 2 / np.log(self.sigma))[..., None]
-        return torch.sqrt(1 - torch.exp(-s))
-
-    def mean(self, t: torch.Tensor) -> torch.Tensor:
-        s = ((self.sigma ** (2 * t) - 1.0) / 2 / np.log(self.sigma))[..., None]
-        return torch.exp(-s / 2)
-
-    def drift(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        return -0.5 * self.diffusion_coeff(t) ** 2 * x
-
-    def diffusion_coeff(self, t: torch.Tensor) -> torch.Tensor:
-        return self.sigma ** t[..., None]
+                x += (
+                    step_size * g_t**2 * self.forward(x, t_i)
+                    + step_size_sqrt * g_t * noise
+                )
+                if history:
+                    output.append(x)
+            if history:
+                return torch.stack(output)
+        return x
 
 
-class DriftScoreModel(torch.nn.Module):
+class DriftScoreModel(ScoreModel):
     def __init__(
         self,
         network: torch.nn.Module,
         marginal_prob: VPMarginalProb,
         device: Optional[str] = None,
     ) -> None:
-        super().__init__()
-        self.network = network
-        self.marginal_prob = marginal_prob
-        self.device = device
-        self.history = []
-
-    def forward(self, x, t):
-        return self.network(x, t)
+        super().__init__(network, marginal_prob, device)
 
     def train_step(self, x, optimizer, eps, scheduler=None):
         random_t = torch.rand(1, device=self.device) * (1.0 - eps) + eps
         z = torch.randn_like(x)
-        std = self.marginal_prob.stddev(random_t)
-        mean = self.marginal_prob.mean(random_t)
-        perturbed_x = x * mean + z * std
+        mean, std = self.marginal_prob.get_mean_stddev(x, random_t)
+        perturbed_x = mean + z * std
 
         optimizer.zero_grad()
 
@@ -298,77 +264,6 @@ class DriftScoreModel(torch.nn.Module):
             scheduler.step()
 
         return loss
-
-    def train(
-        self,
-        loader,
-        optimizer,
-        epochs: int = 20,
-        filename: Optional[str] = None,
-        plot_loss: bool = None,
-        eps=1e-5,
-    ):
-        tqdm_epoch = trange(epochs)
-
-        for epoch in tqdm_epoch:
-            epoch_loss = 0
-            num_items = 0
-            for batch in loader:
-                loss = self.train_step(batch, optimizer, eps)
-                epoch_loss += loss.item() * batch.shape[0]
-                num_items += batch.shape[0]
-
-            self.history.append(epoch_loss / num_items)
-            tqdm_epoch.set_description(f"Average Loss: {self.history[-1]:5f}")
-            if filename is not None:
-                torch.save(self.state_dict(), filename)
-
-        if plot_loss:
-            fig, ax = plt.subplots(1, 1, dpi=75, figsize=(6, 3))
-            ax.plot(self.history)
-            ax.set_ylabel("MSELoss")
-            ax.set_xlabel("Epoch")
-            plt.show()
-
-    def train_v2(
-        self,
-        loader,
-        optimizer,
-        epochs: int,
-        filename: str,
-        eps: float = 1e-5,
-        scheduler=None,
-        early_stopping: int = 10,
-    ):
-        tqdm_epoch = trange(epochs)
-        best_loss = float("inf")
-        counter = 0
-
-        for epoch in tqdm_epoch:
-            epoch_loss = 0
-            num_items = 0
-            for batch in loader:
-                batch = torch.concatenate([batch, -batch])
-                loss = self.train_step(batch, optimizer, eps, scheduler)
-                epoch_loss += loss.item() * batch.shape[0]
-                num_items += batch.shape[0]
-            current_loss = epoch_loss / num_items
-            self.history.append(current_loss)
-            log_string = f"Average Loss: {self.history[-1]:5f}"
-
-            if best_loss > current_loss:
-                counter = 0
-                best_loss = current_loss
-                torch.save(self.state_dict(), filename)
-                log_string += " ---> Best model so far (stored)"
-
-            counter += 1
-            tqdm_epoch.set_description(log_string)
-            if counter == early_stopping:
-                print(
-                    f"Stopping training at {epoch:g} epoch(s) ! Best loss: {best_loss: .5f}"
-                )
-                break
 
     def sampler(
         self, size: int, num_steps: int, history: bool = False, eps=1e-5, init_x=None
@@ -399,134 +294,29 @@ class DriftScoreModel(torch.nn.Module):
             return np.stack(output)
         return x
 
-    # class VPMarginalProb:
-    # 	def __init__(self, sigma: float = 2.) -> None:
-    # 		self.sigma = sigma
-    # 		self.logsigma = np.log(sigma)
+    def tensor_sampler(
+        self, size: int, num_steps: int, history: bool = False, eps=1e-5
+    ):
+        output = []
+        step_size = 1 / num_steps
+        step_size_sqrt = step_size**0.5
 
-    # 	def stddev(self, t: torch.Tensor) -> torch.Tensor:
-    # 		s = (torch.exp(2*t*self.logsigma) - 1.)/2/self.logsigma
-    # 		return (1 - torch.exp(-s)).sqrt()[..., None]
+        x = torch.randn(size, 1, device=self.device)
+        with torch.no_grad():
+            for t_i in tqdm(
+                torch.linspace(1, eps, num_steps, device=self.device)[:, None]
+            ):
+                g_t = self.marginal_prob.diffusion_coeff(t_i)
+                noise = torch.randn_like(x) if t_i > eps else 0
+                drift = self.marginal_prob.drift(x, t_i)
+                score = self.forward(x, t_i)
 
-    # 	def mean(self, t: torch.Tensor) -> torch.Tensor:
-    # 		s = (torch.exp(2*t*self.logsigma) - 1.)/2/self.logsigma
-    # 		return torch.exp(-s/2)[..., None]
-
-    # 	def drift(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-    # 		return -0.5*self.diffusion_coeff(t)**2 * x
-
-    # 	def diffusion_coeff(self, t: torch.Tensor) -> torch.Tensor:
-    # 		return self.sigma**t[..., None]
-
-    # 	def perturb_data(self, x: torch.Tensor, t:torch.Tensor)->torch.Tensor:
-    # 		std = self.stddev(t)
-    # 		mean = self.mean(t)
-    # 		z = torch.randn_like(x)
-    # 		return x * mean + z * std
-
-    # class DriftScoreModel(torch.nn.Module):
-    #     def __init__(self, network: torch.nn.Module, marginal_prob: MarginalProb, device: Optional[str] = None) -> None:
-    #         super().__init__()
-    #         self.network = network
-    #         self.marginal_prob=marginal_prob
-    #         self.device=device
-    #         self.history = []
-
-    #     def forward(self, x, t):
-    #         return self.network(x, t)
-
-    #     def train_step(self, x, optimizer, eps, scheduler = None):
-    #         random_t = torch.rand(1, device=self.device) * (1. - eps) + eps
-    #         z = torch.randn_like(x)
-    #         std = self.marginal_prob.stddev(random_t)
-    #         perturbed_x = self.marginal_prob.perturb_data(x, random_t)
-
-    #         optimizer.zero_grad()
-
-    #         score = self.forward(perturbed_x, random_t)
-    #         loss = 0.5 * torch.mean(torch.sum((score * std + z)**2, dim=-1))
-
-    #         loss.backward()
-    #         optimizer.step()
-
-    #         if scheduler is not None:
-    #             scheduler.step()
-
-    #         return loss
-
-    #     def train_v2(self, loader, optimizer, epochs: int, filename: str, eps:float=1e-5, scheduler=None, early_stopping: int = 10):
-    #         tqdm_epoch = trange(epochs)
-    #         best_loss = float("inf")
-    #         counter = 0
-
-    #         for epoch in tqdm_epoch:
-    #             epoch_loss = 0
-    #             num_items = 0
-    #             for batch in loader:
-    #                 loss = self.train_step(batch, optimizer, eps, scheduler)
-    #                 epoch_loss += loss.item() * batch.shape[0]
-    #                 num_items += batch.shape[0]
-    #             current_loss = epoch_loss/num_items
-    #             self.history.append(current_loss)
-    #             log_string = f'Average Loss: {self.history[-1]:5f}'
-
-    #             if best_loss > current_loss:
-    #                 counter = 0
-    #                 best_loss = current_loss
-    #                 torch.save(self.state_dict(), filename)
-    #                 log_string += " ---> Best model so far (stored)"
-
-    #             counter += 1
-    #             tqdm_epoch.set_description(log_string)
-    #             if counter == early_stopping:
-    #                 print(f"Stopping training at {epoch:g} epoch(s) ! Best loss: {best_loss: .5f}")
-    #                 break
-
-    #     def sampler(self, size, num_steps: int, history: bool = False, eps=1e-5):
-    #         output = []
-    #         x = np.random.randn(size, 1)
-    #         step_size = 1/num_steps
-    #         step_size_sqrt = step_size**0.5
-    #         for t_i in tqdm(torch.linspace(1, eps, num_steps)[:, None]):
-    #             g_t = self.marginal_prob.diffusion_coeff(t_i).item()
-    #             drift = grab(self.marginal_prob.drift(x, t_i))
-
-    #             torch_x = torch.tensor(x, dtype=torch.float32)
-    #             score = grab(self.forward(torch_x, t_i))
-
-    #             noise = np.random.randn(*x.shape) if t_i > eps else 0
-
-    #             x = x + step_size * (-drift + g_t**2 * score) + step_size_sqrt * g_t * noise
-    #             if history:
-    #                 output.append(x)
-
-    #         if history:
-    #             return np.stack(output)
-    #         return x
-
-    # class DriftScoreModel(ScoreModel):
-    # 	def __init__(self, network: Module, marginal_prob: MarginalProb, device: str | None = None) -> None:
-    # 		super().__init__(network, marginal_prob, device)
-
-    # 	def sampler(self, size, num_steps: int, history: bool = False, eps=1e-5):
-    # 		output = []
-
-    # 		x = np.random.randn(size, 1)
-    # 		step_size = 1/num_steps
-    # 		step_size_sqrt = step_size**0.5
-    # 		for t_i in tqdm(torch.linspace(1, eps, num_steps)[:, None]):
-    # 			g_t = self.marginal_prob.diffusion_coeff(t_i).item()
-    # 			drift = grab(self.marginal_prob.drift(x, t_i))
-
-    # 			torch_x = torch.tensor(x, dtype=torch.float32)
-    # 			score = grab(self.forward(torch_x, t_i))
-
-    # 			noise = np.random.randn(*x.shape) if t_i > eps else 0
-
-    # 			x = x + step_size * (-drift + g_t**2 * score) + step_size_sqrt * g_t * noise
-    # 			if history:
-    # 				output.append(x)
-
-    # 		if history:
-    # 			return np.stack(output)
-    # 		return x
+                x += (
+                    step_size * (-drift + g_t**2 * score)
+                    + step_size_sqrt * g_t * noise
+                )
+                if history:
+                    output.append(x)
+            if history:
+                return torch.stack(output)
+        return x

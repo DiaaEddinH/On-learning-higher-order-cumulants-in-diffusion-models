@@ -7,35 +7,35 @@ from matplotlib.ticker import AutoMinorLocator
 from scipy.special import binom
 from scipy.stats import moment
 
-plt.rcParams.update(
-    {
-        "text.usetex": True,
-        "font.family": "serif",
-        "font.serif": ["Times New Roman"],  # or any other serif font you prefer
-        "font.size": 14,  # Set the default font size
-        "xtick.direction": "in",
-        "ytick.direction": "in",
-        "xtick.top": True,
-        "ytick.right": True,
-        "xtick.major.size": 6,
-        "ytick.major.size": 6,
-        "xtick.major.width": 1,
-        "ytick.major.width": 1,
-        "xtick.minor.visible": True,
-        "ytick.minor.visible": True,
-        "xtick.minor.size": 3,
-        "ytick.minor.size": 3,
-        "xtick.minor.width": 1,
-        "ytick.minor.width": 1,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-    }
-)
+# plt.rcParams.update(
+#     {
+#         "text.usetex": True,
+#         "font.family": "serif",
+#         "font.serif": ["Times New Roman"],  # or any other serif font you prefer
+#         "font.size": 14,  # Set the default font size
+#         "xtick.direction": "in",
+#         "ytick.direction": "in",
+#         "xtick.top": True,
+#         "ytick.right": True,
+#         "xtick.major.size": 6,
+#         "ytick.major.size": 6,
+#         "xtick.major.width": 1,
+#         "ytick.major.width": 1,
+#         "xtick.minor.visible": True,
+#         "ytick.minor.visible": True,
+#         "xtick.minor.size": 3,
+#         "ytick.minor.size": 3,
+#         "xtick.minor.width": 1,
+#         "ytick.minor.width": 1,
+#         "xtick.labelsize": 10,
+#         "ytick.labelsize": 10,
+#     }
+# )
 
-plt.minorticks_on()
-# Set the minor tick frequency globally
-plt.gca().xaxis.set_minor_locator(AutoMinorLocator(2))
-plt.gca().yaxis.set_minor_locator(AutoMinorLocator(2))
+# plt.minorticks_on()
+# # Set the minor tick frequency globally
+# plt.gca().xaxis.set_minor_locator(AutoMinorLocator(2))
+# plt.gca().yaxis.set_minor_locator(AutoMinorLocator(2))
 
 
 def bootstrap(x, Nboot, binsize):
@@ -64,10 +64,6 @@ def jackknife(samples: np.ndarray):
 
 def grab(x: torch.Tensor) -> np.ndarray:
     return x.detach().cpu().numpy()
-
-
-def stats(samples):
-    return np.mean(samples, axis=0), np.std(samples, axis=0) / np.sqrt(samples.shape[0])
 
 
 class Scaler:
@@ -113,22 +109,6 @@ def nth_cumulants(data, order, axis=0):
         cumulants_list.append(kappa)
 
     return cumulants_list
-
-
-# def jackknife_cumulants(data, order, axis=0):
-# 	n_samples = len(data)
-# 	jackknife_cumulants = []
-
-# 	for i in range(n_samples):
-# 		jackknife_sample = np.delete(samples, i, axis=axis)
-# 		jackknife_cumulants.append(nth_cumulants(jackknife_sample, order))
-
-# 	jackknife_cumulants = np.squeeze(jackknife_cumulants)
-# 	cumulants_means = np.mean(jackknife_cumulants, axis=axis)
-
-# 	jackknife_errors = np.sqrt(n_samples - 1) * np.mean((jackknife_cumulants - cumulants_means)**2, axis=axis)
-
-# 	return cumulants_means, jackknife_errors
 
 
 def bootstrap_cumulants(data, order, axis=0, n_boot=1000):
