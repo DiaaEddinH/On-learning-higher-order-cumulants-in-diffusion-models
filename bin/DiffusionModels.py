@@ -1,8 +1,10 @@
 from math import log
+from typing import Optional
 
-from torch.nn.modules import Module
+import numpy as np
+import torch
 from tqdm import tqdm, trange
-from utils import *
+from utils import grab
 
 
 class GaussianFourierProjection(torch.nn.Module):
@@ -84,7 +86,7 @@ class MarginalProb:
     def get_mean_stddev(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         return (
             x,
-            torch.sqrt(torch.exp((2 * t * self.logsigma) - 1.0) / 2 / self.logsigma)[
+            torch.sqrt((torch.exp(2 * t * self.logsigma) - 1.0) / 2 / self.logsigma)[
                 ..., None
             ],
         )
@@ -187,8 +189,8 @@ class ScoreModel(torch.nn.Module):
         output = []
         _, std = self.marginal_prob.get_mean_stddev(
             None, torch.ones(1)
-        ).item()  # we only need the std. dev.
-        x = np.random.normal(loc=0, scale=std, size=(size, 1))
+        )  # we only need the std. dev.
+        x = np.random.normal(loc=0, scale=std.item(), size=(size, 1))
         step_size = 1 / num_steps
         step_size_sqrt = step_size**0.5
 
@@ -226,8 +228,9 @@ class ScoreModel(torch.nn.Module):
                 g_t = self.marginal_prob.diffusion_coeff(t_i)
                 noise = torch.randn_like(x) if t_i > eps else 0
 
-                x += (
-                    step_size * g_t**2 * self.forward(x, t_i)
+                x = (
+                    x
+                    + step_size * g_t**2 * self.forward(x, t_i)
                     + step_size_sqrt * g_t * noise
                 )
                 if history:
@@ -311,8 +314,9 @@ class DriftScoreModel(ScoreModel):
                 drift = self.marginal_prob.drift(x, t_i)
                 score = self.forward(x, t_i)
 
-                x += (
-                    step_size * (-drift + g_t**2 * score)
+                x = (
+                    x
+                    + step_size * (-drift + g_t**2 * score)
                     + step_size_sqrt * g_t * noise
                 )
                 if history:

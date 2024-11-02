@@ -1,5 +1,3 @@
-from typing import Optional
-
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -7,35 +5,49 @@ from matplotlib.ticker import AutoMinorLocator
 from scipy.special import binom
 from scipy.stats import moment
 
-# plt.rcParams.update(
-#     {
-#         "text.usetex": True,
-#         "font.family": "serif",
-#         "font.serif": ["Times New Roman"],  # or any other serif font you prefer
-#         "font.size": 14,  # Set the default font size
-#         "xtick.direction": "in",
-#         "ytick.direction": "in",
-#         "xtick.top": True,
-#         "ytick.right": True,
-#         "xtick.major.size": 6,
-#         "ytick.major.size": 6,
-#         "xtick.major.width": 1,
-#         "ytick.major.width": 1,
-#         "xtick.minor.visible": True,
-#         "ytick.minor.visible": True,
-#         "xtick.minor.size": 3,
-#         "ytick.minor.size": 3,
-#         "xtick.minor.width": 1,
-#         "ytick.minor.width": 1,
-#         "xtick.labelsize": 10,
-#         "ytick.labelsize": 10,
-#     }
-# )
 
-# plt.minorticks_on()
-# # Set the minor tick frequency globally
-# plt.gca().xaxis.set_minor_locator(AutoMinorLocator(2))
-# plt.gca().yaxis.set_minor_locator(AutoMinorLocator(2))
+def set_device(device: str = "cpu") -> torch.device:
+    assert device in ["gpu", "cpu"], f"{device} is not a supported device"
+    if device == "gpu":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            return torch.device("mps")
+        else:
+            print("Neither CUDA nor MPS are available. Setting CPU as device.")
+    return torch.device("cpu")
+
+
+def set_default_plot_parameters():
+    plt.rcParams.update(
+        {
+            "text.usetex": True,
+            "font.family": "serif",
+            "font.serif": ["Times New Roman"],  # or any other serif font you prefer
+            "font.size": 14,  # Set the default font size
+            "xtick.direction": "in",
+            "ytick.direction": "in",
+            "xtick.top": True,
+            "ytick.right": True,
+            "xtick.major.size": 6,
+            "ytick.major.size": 6,
+            "xtick.major.width": 1,
+            "ytick.major.width": 1,
+            "xtick.minor.visible": True,
+            "ytick.minor.visible": True,
+            "xtick.minor.size": 3,
+            "ytick.minor.size": 3,
+            "xtick.minor.width": 1,
+            "ytick.minor.width": 1,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+        }
+    )
+
+    plt.minorticks_on()
+    # Set the minor tick frequency globally
+    plt.gca().xaxis.set_minor_locator(AutoMinorLocator(2))
+    plt.gca().yaxis.set_minor_locator(AutoMinorLocator(2))
 
 
 def bootstrap(x, Nboot, binsize):
@@ -125,29 +137,3 @@ def bootstrap_cumulants(data, order, axis=0, n_boot=1000):
     boot_errors = np.std(boot_cumulants, axis=axis)
 
     return cumulants_means, boot_errors
-
-
-# from scipy.special import binom
-
-# def nth_cumulants(data, order, axis=0):
-#     """
-#     Calculate the first few cumulants of a dataset up to the specified order.
-
-#     Parameters:
-#     data (array-like): Input data
-#     order (int): The highest order of cumulants to calculate
-
-#     Returns:
-#     list: A list of cumulants from 1 to the specified order
-#     """
-#     cumulants_list = [np.mean(data, axis=axis)]  # First cumulant is the mean
-
-#     for n in range(2, order + 1):
-#         kappa = moment(data, n, axis=axis)
-#         if n > 2:
-#             for i in range(1, n):
-#                 kappa -= (binom(n - 1, i - 1) * cumulants_list[i - 1] *
-#                           moment(data, n-i, axis=axis))
-#         cumulants_list.append(kappa)
-
-#     return cumulants_list

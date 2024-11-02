@@ -1,12 +1,13 @@
 import json
 import os
 
+import numpy as np
+import torch
 import torch.distributed as dist
 from DiffusionModels import MarginalProb, Net, ScoreModel
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm, trange
-from utils import *
 
 
 def set_device(device: str = "cpu") -> torch.device:
@@ -25,11 +26,17 @@ def ddp_setup(device):
     """
     Setup for DistributedDataParallel training using torchrun
     """
-    backend = "gloo" if device == "cpu" else "nccl"
+    if device == "cpu":
+        backend = "gloo"
+    else:
+        backend = "nccl"
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     dist.init_process_group(backend=backend)
 
 
-def train_model(data, params: dict, filepath: str, device: torch.device):
+def train_model(
+    data, params: dict, filepath: str, device: torch.device, num_workers: int = 0
+):
     assert str(device) in [
         "cpu",
         "cuda",
@@ -37,7 +44,9 @@ def train_model(data, params: dict, filepath: str, device: torch.device):
     ], f"{device} is not supported for training"
     torch.manual_seed(4811)
 
-    loader = DataLoader(data, batch_size=params["batch_size"], pin_memory=True)
+    loader = DataLoader(
+        data, batch_size=params["batch_size"], pin_memory=True, num_workers=num_workers
+    )
     trainer = Trainer(
         ScoreModel, MarginalProb, loader, torch.optim.Adam, params, filepath, device
     )
@@ -45,7 +54,9 @@ def train_model(data, params: dict, filepath: str, device: torch.device):
     trainer.train(params["N_epochs"], early_stopping=50)
 
 
-def train_model_ddp(data, params: dict, filepath: str, device: torch.device):
+def train_model_ddp(
+    data, params: dict, filepath: str, device: torch.device, num_workers: int = 0
+):
     assert str(device) in [
         "cpu",
         "cuda",
@@ -55,7 +66,11 @@ def train_model_ddp(data, params: dict, filepath: str, device: torch.device):
 
     sampler = DistributedSampler(data)
     loader = DataLoader(
-        data, batch_size=params["batch_size"], sampler=sampler, pin_memory=True
+        data,
+        batch_size=params["batch_size"],
+        sampler=sampler,
+        pin_memory=True,
+        num_workers=num_workers,
     )
     trainer = DDPTrainer(
         ScoreModel, MarginalProb, loader, torch.optim.Adam, params, filepath, device
@@ -71,13 +86,13 @@ class Trainer:
     Creates a trainer for a score-based diffusion model.
 
     Args:
-            _model (torch.nn.Module): the score model class to be trained.
-            _marginal_prob (MarginalProb): marginal probability function of diffusion coefficient.
-            loader (DataLoader): loader of the training data.
-            optimizer (torch.optim.Optimizer): optimisation scheme for training.
-            params (dict): parameters of the model, e.g. batch_size, epochs, hidden layers, channels etc.
-            file_path (str): The path to the file the model state is going to be saved.
-            device (str): The device used to train the model e.g. CPU, GPU, MPS. Defaults to CPUs
+                    _model (torch.nn.Module): the score model class to be trained.
+                    _marginal_prob (MarginalProb): marginal probability function of diffusion coefficient.
+                    loader (DataLoader): loader of the training data.
+                    optimizer (torch.optim.Optimizer): optimisation scheme for training.
+                    params (dict): parameters of the model, e.g. batch_size, epochs, hidden layers, channels etc.
+                    file_path (str): The path to the file the model state is going to be saved.
+                    device (str): The device used to train the model e.g. CPU, GPU, MPS. Defaults to CPUs
     """
 
     def __init__(
@@ -116,7 +131,6 @@ class Trainer:
         )
 
         if os.path.exists(self.file_path):
-            print("Loading checkpoint")
             self._load_checkpoint(self.file_path)
 
         self.optimizer = optimizer(self.model.parameters(), lr=self.params["base_lr"])
@@ -125,7 +139,9 @@ class Trainer:
         ckpt = torch.load(path, map_location=self.device, weights_only=True)
         self.model.load_state_dict(ckpt["MODEL_STATE"])
         self.epochs = ckpt["EPOCHS"]
-        print(f"Training continues from checkpoint at epoch {self.epochs}...")
+        if self.rank == 0:
+            print("Loading checkpoint")
+            print(f"Training continues from checkpoint at epoch {self.epochs}...")
 
     def _save_checkpoint(self, epoch):
         checkpoint = {"MODEL_STATE": self.model.state_dict(), "EPOCHS": epoch}
@@ -171,14 +187,15 @@ class DDPTrainer(Trainer):
     def __init__(
         self, _model, _marginal_prob, loader, optimizer, params, file_path, device
     ):
+        self.rank = int(os.environ["LOCAL_RANK"])
+        self.world_size = int(os.environ["WORLD_SIZE"])
         super().__init__(
             _model, _marginal_prob, loader, optimizer, params, file_path, device
         )
-        self.rank = int(os.environ["LOCAL_RANK"])
-        self.world_size = int(os.environ["WORLD_SIZE"])
 
-    def _set_model(self, marginal_prob_cls, score_model):
-        super()._set_model(marginal_prob_cls, score_model)
+    def _set_model(self, marginal_prob_cls, score_model, optimizer):
+        super()._set_model(marginal_prob_cls, score_model, optimizer)
+        self.model = DDP(self.model, device_ids=[self.rank])
 
     def _save_checkpoint(self, epoch):
         checkpoint = {"MODEL_STATE": self.model.module.state_dict(), "EPOCHS": epoch}
@@ -249,7 +266,13 @@ if __name__ == "__main__":
         "--batch_size",
         default=512,
         type=int,
-        help="Input batch size on device (default: 32)",
+        help="Input batch size on device (default: 512)",
+    )
+    parser.add_argument(
+        "--num_workers",
+        default=0,
+        type=int,
+        help="Number of workers used by data loader during training (default: 0)",
     )
     parser.add_argument("--ddp", action=argparse.BooleanOptionalAction)
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction)
@@ -263,9 +286,9 @@ if __name__ == "__main__":
         "marginal_prob_sigma": 10,
         "channels": [64, 64],
         "time_channels": 128,
-        "batch_size": 512,
+        "batch_size": args.batch_size,
         "base_lr": 1e-4,
-        "N_epochs": 10,
+        "N_epochs": args.max_epochs,
     }
 
     model_filename = (
@@ -290,4 +313,10 @@ if __name__ == "__main__":
             print(f"{str(device).upper()} is not available for distributed learning.")
         train_func = train_model
 
-    train_func(data=data, params=parameters, filepath=model_filename, device=device)
+    train_func(
+        data=data,
+        params=parameters,
+        filepath=model_filename,
+        device=device,
+        num_workers=args.num_workers,
+    )
