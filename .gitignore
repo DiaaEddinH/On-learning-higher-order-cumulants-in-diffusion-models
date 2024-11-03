@@ -2,10 +2,4 @@
 __pycache__
 .vscode
 clean_environment.sh
-testing.ipynb
-*.pdf
-*.png
-figures*
-data/
-DM_cumulants_Plot
-forward_cumulants_fromHMC
+.pytest_cache
