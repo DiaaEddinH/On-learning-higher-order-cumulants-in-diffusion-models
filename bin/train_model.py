@@ -298,7 +298,7 @@ if __name__ == "__main__":
         type=int,
         help="Number of workers used by data loader during training (default: 0)",
     )
-    parser.add_argument("--ddp", action=argparse.BooleanOptionalAction)
+    parser.add_argument("--ddp", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction)
     parser.add_argument("--VE", action=argparse.BooleanOptionalAction)
     args = parser.parse_args()
