@@ -104,13 +104,13 @@ class Trainer:
     Creates a trainer for a score-based diffusion model.
 
     Args:
-                                    _model (torch.nn.Module): the score model class to be trained.
-                                    _marginal_prob (MarginalProb): marginal probability function of diffusion coefficient.
-                                    loader (DataLoader): loader of the training data.
-                                    optimizer (torch.optim.Optimizer): optimisation scheme for training.
-                                    params (dict): parameters of the model, e.g. batch_size, epochs, hidden layers, channels etc.
-                                    file_path (str): The path to the file the model state is going to be saved.
-                                    device (str): The device used to train the model e.g. CPU, GPU, MPS. Defaults to CPUs
+                                                                    _model (torch.nn.Module): the score model class to be trained.
+                                                                    _marginal_prob (MarginalProb): marginal probability function of diffusion coefficient.
+                                                                    loader (DataLoader): loader of the training data.
+                                                                    optimizer (torch.optim.Optimizer): optimisation scheme for training.
+                                                                    params (dict): parameters of the model, e.g. batch_size, epochs, hidden layers, channels etc.
+                                                                    file_path (str): The path to the file the model state is going to be saved.
+                                                                    device (str): The device used to train the model e.g. CPU, GPU, MPS. Defaults to CPUs
     """
 
     def __init__(
@@ -125,10 +125,12 @@ class Trainer:
     ) -> None:
         self.params = params
         self.file_path = file_path
+        self.checkpoint = "checkpoint_" + file_path
         self.loader = loader
         self.epochs = 0
         self.device = device
         self._set_model(_marginal_prob, _model, optimizer)
+        self.ckpt_freq = 10
 
     def _set_model(
         self,
@@ -148,8 +150,8 @@ class Trainer:
             network=net, marginal_prob=marginal_prob, device=self.device
         )
 
-        if os.path.exists(self.file_path):
-            self._load_checkpoint(self.file_path)
+        if os.path.exists(self.checkpoint):
+            self._load_checkpoint(self.checkpoint)
 
         self.optimizer = optimizer(self.model.parameters(), lr=self.params["base_lr"])
 
@@ -184,11 +186,13 @@ class Trainer:
             current_loss = epoch_loss / num_items
             log_string = f"Average Loss: {current_loss:5f}"
 
+            if epoch % self.ckpt_freq == 0:
+                self._save_checkpoint(epoch)
+
             if best_loss > current_loss:
                 counter = 0
                 best_loss = current_loss
-                self._save_checkpoint(epoch)
-                # torch.save(self.state_dict(), filename)
+                torch.save(self.model.state_dict(), self.file_path)
                 log_string += " ---> Best model so far (stored)"
             else:
                 counter += 1
@@ -251,11 +255,13 @@ class DDPTrainer(Trainer):
                 # self.history.append(current_loss)
                 log_string = f"Average Loss: {current_loss:5f}"
 
+                if epoch % self.ckpt_freq == 0:
+                    self._save_checkpoint(epoch)
+
                 if best_loss > current_loss:
                     counter = 0
                     best_loss = current_loss
-                    self._save_checkpoint(epoch)
-                    # torch.save(self.state_dict(), filename)
+                    torch.save(self.model.module.state_dict(), self.file_path)
                     log_string += " ---> Best model so far (stored)"
                 else:
                     counter += 1
