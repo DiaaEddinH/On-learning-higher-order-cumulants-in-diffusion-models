@@ -1,7 +1,7 @@
 # On learning higher order cumulants in diffusion models
 
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14035138.svg)](https://doi.org/10.5281/zenodo.14035138)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14035138.svg)](https://doi.org/10.5281/zenodo.14035137)
 
 
 Data and code release for [arxiv:2410.21212](https://arxiv.org/abs/2410.21212)
