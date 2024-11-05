@@ -37,6 +37,12 @@ If you wish to use multiple gpus/cpus and distributed training, you can use `tor
 torchrun --standalone  --nproc_per_node=<no. of gpus/cpus> bin/train_model.py --max_epochs <max_epochs> --batch_size <batch_size> --ddp [--gpu/--no-gpu] [--VE/--no-VE]
 ```
 
+Flags:
+
+* [--ddp/--no-ddp] - option whether to use distirbuted data parallelism. Can be used to train on multiple CPUs/GPUs. Recommended when training on multiple or even a single GPU. Doesn't support MPS (Mac).
+* [--gpu/--no-gpu] - controls whether to use GPU(s) for training.
+* [--VE/--no-VE]   - selects between the variance expanding (VE) or variance preserving (VP) schemes described in the preprint.
+
 Running the notebook `plots.ipynb` will use the trained model as well as other data in `data` folder to generate the aggregated plots and figures found in the paper.
 
 ## Field theory code/data

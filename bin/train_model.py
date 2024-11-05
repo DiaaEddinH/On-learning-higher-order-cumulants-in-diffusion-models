@@ -13,7 +13,9 @@ from DiffusionModels import (
 )
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-from tqdm import tqdm, trange
+from tqdm import trange
+
+CWD = os.getcwd()
 
 
 def set_device(device: str = "cpu") -> torch.device:
@@ -104,13 +106,13 @@ class Trainer:
     Creates a trainer for a score-based diffusion model.
 
     Args:
-                                                                    _model (torch.nn.Module): the score model class to be trained.
-                                                                    _marginal_prob (MarginalProb): marginal probability function of diffusion coefficient.
-                                                                    loader (DataLoader): loader of the training data.
-                                                                    optimizer (torch.optim.Optimizer): optimisation scheme for training.
-                                                                    params (dict): parameters of the model, e.g. batch_size, epochs, hidden layers, channels etc.
-                                                                    file_path (str): The path to the file the model state is going to be saved.
-                                                                    device (str): The device used to train the model e.g. CPU, GPU, MPS. Defaults to CPUs
+            _model (torch.nn.Module): the score model class to be trained.
+            _marginal_prob (MarginalProb): marginal probability function of diffusion coefficient.
+            loader (DataLoader): loader of the training data.
+            optimizer (torch.optim.Optimizer): optimisation scheme for training.
+            params (dict): parameters of the model, e.g. batch_size, epochs, hidden layers, channels etc.
+            file_path (str): The path to the file the model state is going to be saved.
+            device (str): The device used to train the model e.g. CPU, GPU, MPS. Defaults to CPUs
     """
 
     def __init__(
@@ -125,7 +127,7 @@ class Trainer:
     ) -> None:
         self.params = params
         self.file_path = file_path
-        self.checkpoint = "checkpoint_" + file_path
+        self.checkpoint = CWD + "data/ModelWeights/checkpoint.pt"
         self.loader = loader
         self.epochs = 0
         self.device = device
@@ -298,13 +300,22 @@ if __name__ == "__main__":
         type=int,
         help="Number of workers used by data loader during training (default: 0)",
     )
+    parser.add_argument(
+        "--file",
+        default="score_model",
+        type=str,
+        help="Name of file to save model's weight in (Default: 'score_model'). By defaults, save a .pt file.",
+    )
+
     parser.add_argument("--ddp", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction)
     parser.add_argument("--VE", action=argparse.BooleanOptionalAction)
     args = parser.parse_args()
 
     # Load dataset for training
-    data = np.loadtxt("data/double_peak_samples_1M.dat", dtype=np.float32)[:, None]
+    data = np.loadtxt(
+        CWD + "/data/toy_model/double_peak_samples_1M.dat", dtype=np.float32
+    )[:, None]
 
     parameters = {
         "input_channels": 1,
@@ -316,12 +327,8 @@ if __name__ == "__main__":
         "N_epochs": args.max_epochs,
     }
 
-    model_filename = (
-        f"data/ModelWeights/sigma{parameters['marginal_prob_sigma']}_VE_weights.pt"
-    )
-    param_filename = (
-        f"data/ModelWeights/sigma{parameters['marginal_prob_sigma']}_VE_params.json"
-    )
+    model_filename = CWD + f"/data/ModelWeights/" + args.file + "_weights.pt"
+    param_filename = CWD + f"/data/ModelWeights/" + args.file + "_params.json"
     with open(param_filename, "w") as fp:
         json.dump(parameters, fp)
 
@@ -334,7 +341,7 @@ if __name__ == "__main__":
             )
         train_func = train_model_ddp
     else:
-        if int(os.environ["LOCAL_RANK"]) == 0:
+        if int(os.environ.get("LOCAL_RANK", 0)) == 0:
             print(f"{str(device).upper()} is not available for distributed learning.")
         train_func = train_model
 
