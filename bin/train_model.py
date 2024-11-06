@@ -167,8 +167,8 @@ class Trainer:
 
     def _save_checkpoint(self, epoch):
         checkpoint = {"MODEL_STATE": self.model.state_dict(), "EPOCHS": epoch}
-        torch.save(checkpoint, self.file_path)
-        print(f"Epoch {epoch} | Checkpoint saved at {self.file_path}")
+        torch.save(checkpoint, self.checkpoint)
+        print(f"Epoch {epoch} | Checkpoint saved at {self.checkpoint}")
 
     def train(self, N_epochs: int, eps=1e-5, scheduler=None, early_stopping: int = 10):
         tqdm_epoch = trange(self.epochs, N_epochs)
