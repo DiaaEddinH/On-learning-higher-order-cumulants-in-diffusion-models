@@ -127,7 +127,7 @@ class Trainer:
     ) -> None:
         self.params = params
         self.file_path = file_path
-        self.checkpoint = CWD + "data/ModelWeights/checkpoint.pt"
+        self.checkpoint = CWD + "/data/ModelWeights/checkpoint.pt"
         self.loader = loader
         self.epochs = 0
         self.device = device
